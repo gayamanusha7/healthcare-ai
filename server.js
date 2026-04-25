@@ -49,12 +49,23 @@ app.post("/", async (req, res) => {
                 capabilities: {
                     tools: {},
                     extensions: {
-                        "fhir": true
+                        "ai.promptopinion/fhir-context": {
+                            scopes: [
+                                {
+                                    name: "patient/Patient.rs",
+                                    required: true
+                                },
+                                {
+                                    name: "patient/Condition.rs",
+                                    required: false
+                                }
+                            ]
+                        }
                     }
                 },
                 serverInfo: {
                     name: "FHIR Healthcare MCP",
-                    version: "2.0.0"
+                    version: "2.1.0"
                 }
             }
         });
