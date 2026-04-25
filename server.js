@@ -5,21 +5,20 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// ✅ Root GET (browser check)
+// ✅ Root
 app.get("/", (req, res) => {
     res.send("Healthcare MCP Server Running ✅");
 });
 
-// ✅ MCP metadata (discovery)
+// ✅ MCP metadata
 app.get("/.well-known/mcp", (req, res) => {
-    res.setHeader("Content-Type", "application/json");
     res.json({
         name: "Patient Summary MCP",
         version: "1.0.0",
         tools: [
             {
                 name: "get_patient_summary",
-                description: "Fetch patient conditions, medications, allergies and summary",
+                description: "Fetch patient summary",
                 input_schema: {
                     type: "object",
                     properties: {
@@ -32,60 +31,99 @@ app.get("/.well-known/mcp", (req, res) => {
     });
 });
 
-// ✅ Direct tool endpoint (optional)
-app.post("/tools/get_patient_summary", (req, res) => {
-    const { patient_id } = req.body;
-
-    res.json({
-        patient_id,
-        conditions: ["Diabetes"],
-        medications: ["Metformin"],
-        allergies: ["Penicillin"],
-        summary: `Patient ${patient_id} has diabetes and is taking Metformin.`
-    });
-});
-
-// ✅ MCP main handler (FIXED — supports all formats)
+// ✅ JSON-RPC MCP handler
 app.post("/", (req, res) => {
-    try {
-        console.log("Incoming MCP request:", req.body); // helpful for debugging
+    const { method, params, id } = req.body;
 
-        // Support ALL possible formats
-        const toolName =
-            req.body.tool ||
-            req.body.name ||
-            req.body.action ||
-            req.body.function_name;
+    console.log("MCP Request:", req.body);
 
-        const input =
-            req.body.input ||
-            req.body.arguments ||
-            req.body.params ||
-            {};
+    // 1️⃣ Initialize
+    if (method === "initialize") {
+        return res.json({
+            jsonrpc: "2.0",
+            id,
+            result: {
+                protocolVersion: "2025-11-25",
+                capabilities: {
+                    tools: {}
+                },
+                serverInfo: {
+                    name: "Healthcare MCP",
+                    version: "1.0.0"
+                }
+            }
+        });
+    }
 
-        if (toolName === "get_patient_summary") {
-            const { patient_id } = input;
+    // 2️⃣ List tools
+    if (method === "tools/list") {
+        return res.json({
+            jsonrpc: "2.0",
+            id,
+            result: {
+                tools: [
+                    {
+                        name: "get_patient_summary",
+                        description: "Fetch patient summary",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                patient_id: { type: "string" }
+                            },
+                            required: ["patient_id"]
+                        }
+                    }
+                ]
+            }
+        });
+    }
+
+    // 3️⃣ Call tool
+    if (method === "tools/call") {
+        const { name, arguments: args } = params || {};
+
+        if (name === "get_patient_summary") {
+            const { patient_id } = args || {};
 
             return res.json({
-                patient_id,
-                conditions: ["Diabetes"],
-                medications: ["Metformin"],
-                allergies: ["Penicillin"],
-                summary: `Patient ${patient_id} has diabetes and is taking Metformin.`
+                jsonrpc: "2.0",
+                id,
+                result: {
+                    content: [
+                        {
+                            type: "text",
+                            text: JSON.stringify({
+                                patient_id,
+                                conditions: ["Diabetes"],
+                                medications: ["Metformin"],
+                                allergies: ["Penicillin"],
+                                summary: `Patient ${patient_id} has diabetes and is taking Metformin.`
+                            })
+                        }
+                    ]
+                }
             });
         }
 
-        return res.status(400).json({
-            error: "Unknown tool",
-            received: req.body // helps debugging if still fails
-        });
-
-    } catch (err) {
-        return res.status(500).json({
-            error: "Server error",
-            details: err.message
+        return res.json({
+            jsonrpc: "2.0",
+            id,
+            error: {
+                code: -32601,
+                message: "Tool not found"
+            }
         });
     }
+
+    // ❌ Unknown method
+    return res.json({
+        jsonrpc: "2.0",
+        id,
+        error: {
+            code: -32601,
+            message: "Method not found"
+        }
+    });
 });
 
 // ✅ Health check
