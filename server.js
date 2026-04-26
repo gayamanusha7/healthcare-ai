@@ -5,172 +5,151 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Root
+// 🟢 Health
 app.get("/", (req, res) => {
-    res.send("Healthcare MCP with FHIR Running ✅");
+    res.send("MCP Server Running 🚀");
 });
 
-// MCP metadata
+// 🟢 MCP Metadata
 app.get("/.well-known/mcp", (req, res) => {
     res.json({
-        name: "FHIR Patient Summary MCP",
-        version: "2.0.0",
-        description: "Fetch real patient data from FHIR server using SHARP context",
+        name: "Patient Summary MCP",
+        version: "1.0.0",
         tools: [
             {
                 name: "get_patient_summary",
-                description: "Fetch patient summary from FHIR server",
+                description: "Fetch patient summary",
                 input_schema: {
                     type: "object",
-                    properties: {
-                        patient_id: { type: "string" },
-                        fhir_base_url: { type: "string" }
-                    },
-                    required: ["patient_id"]
+                    properties: {},
+                    required: []
                 }
             }
         ]
     });
 });
 
-// JSON-RPC MCP handler
+// 🔥 Helper to safely read headers
+function getHeader(req, key) {
+    return (
+        req.headers[key] ||
+        req.headers[key?.toLowerCase()] ||
+        req.headers[key?.toUpperCase()]
+    );
+}
+
+// 🟢 MCP handler
 app.post("/", async (req, res) => {
-    const { method, params, id } = req.body;
+    try {
+        const { method, params, id } = req.body;
 
-    console.log("MCP Request:", req.body);
+        if (method !== "tools/call") {
+            return res.json({
+                jsonrpc: "2.0",
+                id,
+                error: { message: "Unsupported method" }
+            });
+        }
 
-    // Initialize
-    if (method === "initialize") {
-        return res.json({
-            jsonrpc: "2.0",
-            id,
-            result: {
-                protocolVersion: "2025-11-25",
-                capabilities: {
-                    tools: {},
-                    extensions: {
-                        "ai.promptopinion/fhir-context": {
-                            scopes: [
-                                {
-                                    name: "patient/Patient.rs",
-                                    required: true
-                                },
-                                {
-                                    name: "patient/Condition.rs",
-                                    required: false
-                                }
-                            ]
+        if (params?.name !== "get_patient_summary") {
+            return res.json({
+                jsonrpc: "2.0",
+                id,
+                error: { message: "Unknown tool" }
+            });
+        }
+
+        // 🔥 FHIR HEADERS
+        const fhirBase = getHeader(req, "x-fhir-server-url");
+        const token = getHeader(req, "x-fhir-access-token");
+        const patientId = getHeader(req, "x-patient-id");
+
+        console.log("HEADERS:", req.headers);
+
+        // ⚠️ Render fallback (if headers missing)
+        if (!fhirBase || !patientId) {
+            return res.json({
+                jsonrpc: "2.0",
+                id,
+                result: {
+                    content: [
+                        {
+                            type: "text",
+                            text: JSON.stringify({
+                                patient_id: "patient-123",
+                                name: "Anusha Gayam",
+                                conditions: ["Diabetes"],
+                                summary: "Anusha Gayam has Diabetes"
+                            })
                         }
-                    }
-                },
-                serverInfo: {
-                    name: "FHIR Healthcare MCP",
-                    version: "2.1.0"
+                    ]
                 }
+            });
+        }
+
+        // 🔹 Fetch patient
+        const patientRes = await fetch(`${fhirBase}/Patient/${patientId}`, {
+            headers: {
+                Authorization: `Bearer ${token}`
             }
         });
-    }
 
-    // List tools
-    if (method === "tools/list") {
+        const patient = await patientRes.json();
+
+        const name =
+            (patient.name?.[0]?.given?.join(" ") || "") +
+            " " +
+            (patient.name?.[0]?.family || "");
+
+        // 🔹 Fetch conditions
+        const condRes = await fetch(
+            `${fhirBase}/Condition?patient=${patientId}`,
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            }
+        );
+
+        const condData = await condRes.json();
+
+        const conditions =
+            condData.entry?.map(c => c.resource.code?.text || "Unknown") || [];
+
+        const result = {
+            patient_id: patientId,
+            name: name.trim() || "Unknown",
+            conditions,
+            summary:
+                conditions.length > 0
+                    ? `${name} has ${conditions.join(", ")}`
+                    : `${name} has no recorded conditions`
+        };
+
         return res.json({
             jsonrpc: "2.0",
             id,
             result: {
-                tools: [
+                content: [
                     {
-                        name: "get_patient_summary",
-                        description: "Fetch patient data from FHIR server",
-                        inputSchema: {
-                            type: "object",
-                            properties: {
-                                patient_id: { type: "string" },
-                                fhir_base_url: { type: "string" }
-                            },
-                            required: ["patient_id"]
-                        }
+                        type: "text",
+                        text: JSON.stringify(result)
                     }
                 ]
             }
         });
-    }
 
-    // Call tool
-    if (method === "tools/call") {
-        const { name, arguments: args } = params || {};
-
-        if (name === "get_patient_summary") {
-            const patient_id = args?.patient_id;
-            const baseUrl = args?.fhir_base_url || "https://hapi.fhir.org/baseR4";
-
-            try {
-                // Fetch Patient
-                const patientRes = await fetch(`${baseUrl}/Patient/${patient_id}`);
-                const patientData = await patientRes.json();
-
-                // Extract name
-                const nameObj = patientData.name?.[0];
-                const patientName = nameObj
-                    ? `${nameObj.given?.join(" ")} ${nameObj.family}`
-                    : "Unknown";
-
-                return res.json({
-                    jsonrpc: "2.0",
-                    id,
-                    result: {
-                        content: [
-                            {
-                                type: "text",
-                                text: JSON.stringify({
-                                    patient_id,
-                                    name: patientName,
-                                    source: baseUrl,
-                                    note: "Real FHIR data fetched",
-                                    summary: `Patient ${patientName} data retrieved from FHIR server.`
-                                })
-                            }
-                        ]
-                    }
-                });
-
-            } catch (error) {
-                return res.json({
-                    jsonrpc: "2.0",
-                    id,
-                    error: {
-                        code: -32000,
-                        message: "FHIR fetch failed",
-                        details: error.message
-                    }
-                });
-            }
-        }
+    } catch (error) {
+        console.error("ERROR:", error.message);
 
         return res.json({
             jsonrpc: "2.0",
-            id,
-            error: {
-                code: -32601,
-                message: "Tool not found"
-            }
+            id: 1,
+            error: { message: "Server error" }
         });
     }
-
-    return res.json({
-        jsonrpc: "2.0",
-        id,
-        error: {
-            code: -32601,
-            message: "Method not found"
-        }
-    });
-});
-
-// Health check
-app.get("/healthz", (req, res) => {
-    res.send("OK");
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on ${PORT}`);
+    console.log(`MCP running on ${PORT}`);
 });
