@@ -24,11 +24,13 @@ app.get("/.well-known/mcp", (req, res) => {
   });
 });
 
-// 🔧 helpers
+// 🔧 Safe header getter
 const getHeader = (req, key) =>
-  req.headers[key] || req.headers[key.toLowerCase()] || req.headers[key.toUpperCase()];
+  req.headers[key] ||
+  req.headers[key.toLowerCase()] ||
+  req.headers[key.toUpperCase()];
 
-// decode JWT payload safely (no verification needed for lookup)
+// 🔧 Decode JWT payload (no verification needed)
 function decodeJwtPayload(token) {
   try {
     const payload = token.split(".")[1];
@@ -39,11 +41,10 @@ function decodeJwtPayload(token) {
   }
 }
 
-// find patientId by name (given + family)
+// 🔧 Find patient by name if ID missing
 async function findPatientIdByName(fhirBase, token, given, family) {
   if (!given && !family) return null;
 
-  // FHIR search (lenient): name=given family
   const q = encodeURIComponent([given, family].filter(Boolean).join(" "));
   const url = `${fhirBase}/Patient?name=${q}&_count=5`;
 
@@ -52,121 +53,68 @@ async function findPatientIdByName(fhirBase, token, given, family) {
   });
 
   const data = await res.json();
-  const entry = data.entry?.[0]?.resource;
-  return entry?.id || null;
+  return data.entry?.[0]?.resource?.id || null;
 }
 
+// 🔥 MAIN MCP HANDLER
 app.post("/", async (req, res) => {
-    const { method, params, id } = req.body || {};
+  const { method, params, id } = req.body || {};
 
-    try {
-        if (method !== "tools/call") {
-            return res.json({
-                jsonrpc: "2.0",
-                id: id || 1,
-                error: { message: "Unsupported method" }
-            });
-        }
-
-        if (params?.name !== "get_patient_summary") {
-            return res.json({
-                jsonrpc: "2.0",
-                id: id || 1,
-                error: { message: "Unknown tool" }
-            });
-        }
-
-        const fhirBase = req.headers["x-fhir-server-url"];
-        const token = req.headers["x-fhir-access-token"];
-        let patientId = req.headers["x-patient-id"];
-
-        console.log("HEADERS:", { fhirBase, patientId });
-
-        // 🔥 SAFE FALLBACK (NO CRASH)
-        if (!patientId) {
-            patientId = "example"; // temporary safe fallback
-        }
-
-        let name = "Unknown";
-        let conditions = [];
-
-        // 🔹 SAFE FETCH PATIENT
-        try {
-            const patientRes = await fetch(`${fhirBase}/Patient/${patientId}`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            const patient = await patientRes.json();
-
-            name =
-                (patient.name?.[0]?.given?.join(" ") || "") +
-                " " +
-                (patient.name?.[0]?.family || "");
-        } catch (e) {
-            console.log("Patient fetch failed");
-        }
-
-        // 🔹 SAFE FETCH CONDITIONS
-        try {
-            const condRes = await fetch(`${fhirBase}/Condition?patient=${patientId}`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-
-            const condData = await condRes.json();
-
-            conditions =
-                condData.entry?.map(
-                    (c) => c.resource.code?.text || "Unknown"
-                ) || [];
-        } catch (e) {
-            console.log("Condition fetch failed");
-        }
-
-        const result = {
-            patient_id: patientId,
-            name: name.trim() || "Unknown",
-            conditions,
-            summary:
-                conditions.length > 0
-                    ? `${name} has ${conditions.join(", ")}`
-                    : `${name} has no recorded conditions`
-        };
-
-        // ✅ ALWAYS RETURN RESPONSE
-        return res.json({
-            jsonrpc: "2.0",
-            id: id || 1,
-            result: {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(result)
-                    }
-                ]
-            }
-        });
-
-    } catch (error) {
-        console.error("FATAL ERROR:", error.message);
-
-        // ✅ EVEN ON ERROR → RETURN RESPONSE
-        return res.json({
-            jsonrpc: "2.0",
-            id: id || 1,
-            result: {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify({
-                            message: "Fallback response",
-                            error: error.message
-                        })
-                    }
-                ]
-            }
-        });
+  try {
+    if (method !== "tools/call") {
+      return res.json({
+        jsonrpc: "2.0",
+        id: id || 1,
+        error: { message: "Unsupported method" }
+      });
     }
-});
+
+    if (params?.name !== "get_patient_summary") {
+      return res.json({
+        jsonrpc: "2.0",
+        id: id || 1,
+        error: { message: "Unknown tool" }
+      });
+    }
+
+    const fhirBase = getHeader(req, "x-fhir-server-url");
+    const token = getHeader(req, "x-fhir-access-token");
+    let patientId = getHeader(req, "x-patient-id");
+
+    console.log("📦 HEADERS:", { fhirBase, patientId });
+
+    // 🔥 Auto-resolve patient if missing
+    if (!patientId) {
+      const payload = decodeJwtPayload(token);
+      const given = payload?.given_name || "";
+      const family = payload?.family_name || "";
+
+      console.log("🔍 Resolving patient:", { given, family });
+
+      try {
+        patientId = await findPatientIdByName(fhirBase, token, given, family);
+      } catch (e) {
+        console.error("❌ Patient lookup failed:", e.message);
+      }
+    }
+
+    // 🚨 Still missing → safe response (NO crash)
+    if (!patientId) {
+      return res.json({
+        jsonrpc: "2.0",
+        id: id || 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                message: "No patient found or selected"
+              })
+            }
+          ]
+        }
+      });
+    }
 
     // 🔹 Fetch Patient
     let patient = {};
@@ -191,7 +139,11 @@ app.post("/", async (req, res) => {
         headers: { Authorization: `Bearer ${token}` }
       });
       const cData = await cRes.json();
-      conditions = cData.entry?.map(c => c.resource.code?.text || "Unknown") || [];
+
+      conditions =
+        cData.entry?.map(
+          (c) => c.resource.code?.text || "Unknown"
+        ) || [];
     } catch (e) {
       console.error("❌ Condition fetch error:", e.message);
     }
@@ -206,18 +158,38 @@ app.post("/", async (req, res) => {
           : `${name} has no recorded conditions`
     };
 
+    // ✅ ALWAYS return valid JSON-RPC
     return res.json({
       jsonrpc: "2.0",
-      id,
-      result: { content: [{ type: "text", text: JSON.stringify(result) }] }
+      id: id || 1,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      }
     });
 
   } catch (error) {
     console.error("❌ SERVER ERROR:", error.message);
+
+    // ✅ Always respond even on crash
     return res.json({
       jsonrpc: "2.0",
       id: id || 1,
-      error: { message: "Server error", details: error.message }
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              message: "Fallback response",
+              error: error.message
+            })
+          }
+        ]
+      }
     });
   }
 });
