@@ -40,6 +40,7 @@ function getHeader(req, key) {
 
 // 🟢 MCP handler
 app.post("/", async (req, res) => {
+    console.log("HEADERS:", req.headers);
     try {
         const { method, params, id } = req.body;
 
