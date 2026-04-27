@@ -96,7 +96,32 @@ app.post("/", async (req, res) => {
         }
       });
     }
-
+    if (method === "notifications/initialized") {
+      return res.json({
+        jsonrpc: "2.0",
+        result: {}
+      });
+    }
+    // ✅ HANDLE tools/list (CRITICAL)
+    if (method === "tools/list") {
+      return res.json({
+        jsonrpc: "2.0",
+        id: id || 1,
+        result: {
+          tools: [
+            {
+              name: "get_patient_summary",
+              description: "Fetch patient summary from FHIR",
+              inputSchema: {
+                type: "object",
+                properties: {},
+                required: []
+              }
+            }
+          ]
+        }
+      });
+    }
     // ✅ Handle other non-tool calls safely
     if (method !== "tools/call") {
       return res.json({
