@@ -18,7 +18,11 @@ app.get("/.well-known/mcp", (req, res) => {
       {
         name: "get_patient_summary",
         description: "Fetch patient summary from FHIR",
-        input_schema: { type: "object", properties: {}, required: [] }
+        input_schema: {
+          type: "object",
+          properties: {},
+          required: []
+        }
       }
     ]
   });
@@ -30,23 +34,22 @@ const getHeader = (req, key) =>
   req.headers[key.toLowerCase()] ||
   req.headers[key.toUpperCase()];
 
-// 🔧 Decode JWT payload (no verification needed)
+// 🔧 Decode JWT payload (used for fallback)
 function decodeJwtPayload(token) {
   try {
     const payload = token.split(".")[1];
-    const json = Buffer.from(payload, "base64").toString("utf8");
-    return JSON.parse(json);
+    return JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
   } catch {
     return {};
   }
 }
 
-// 🔧 Find patient by name if ID missing
+// 🔧 Find patient by name (fallback if no x-patient-id)
 async function findPatientIdByName(fhirBase, token, given, family) {
   if (!given && !family) return null;
 
-  const q = encodeURIComponent([given, family].filter(Boolean).join(" "));
-  const url = `${fhirBase}/Patient?name=${q}&_count=5`;
+  const query = encodeURIComponent([given, family].join(" "));
+  const url = `${fhirBase}/Patient?name=${query}&_count=5`;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
@@ -58,33 +61,56 @@ async function findPatientIdByName(fhirBase, token, given, family) {
 
 // 🔥 MAIN MCP HANDLER
 app.post("/", async (req, res) => {
+  console.log("🔥 MCP HIT:", req.body);
+
   const { method, params, id } = req.body || {};
 
   try {
-    if (method !== "tools/call") {
+    // ✅ IMPORTANT: Handle initialization / unknown calls
+    if (!method || method !== "tools/call") {
       return res.json({
         jsonrpc: "2.0",
         id: id || 1,
-        error: { message: "Unsupported method" }
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                message: "MCP initialized successfully"
+              })
+            }
+          ]
+        }
       });
     }
 
+    // ✅ Handle unknown tools safely
     if (params?.name !== "get_patient_summary") {
       return res.json({
         jsonrpc: "2.0",
         id: id || 1,
-        error: { message: "Unknown tool" }
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                message: "Unknown tool"
+              })
+            }
+          ]
+        }
       });
     }
 
+    // 🔹 Extract headers
     const fhirBase = getHeader(req, "x-fhir-server-url");
     const token = getHeader(req, "x-fhir-access-token");
     let patientId = getHeader(req, "x-patient-id");
 
     console.log("📦 HEADERS:", { fhirBase, patientId });
 
-    // 🔥 Auto-resolve patient if missing
-    if (!patientId) {
+    // 🔥 Fallback: resolve patient from token if missing
+    if (!patientId && token && fhirBase) {
       const payload = decodeJwtPayload(token);
       const given = payload?.given_name || "";
       const family = payload?.family_name || "";
@@ -98,7 +124,7 @@ app.post("/", async (req, res) => {
       }
     }
 
-    // 🚨 Still missing → safe response (NO crash)
+    // 🚨 Still no patient → safe response
     if (!patientId) {
       return res.json({
         jsonrpc: "2.0",
@@ -108,7 +134,7 @@ app.post("/", async (req, res) => {
             {
               type: "text",
               text: JSON.stringify({
-                message: "No patient found or selected"
+                message: "No patient selected or found"
               })
             }
           ]
@@ -175,7 +201,7 @@ app.post("/", async (req, res) => {
   } catch (error) {
     console.error("❌ SERVER ERROR:", error.message);
 
-    // ✅ Always respond even on crash
+    // ✅ Never fail silently
     return res.json({
       jsonrpc: "2.0",
       id: id || 1,
@@ -194,6 +220,7 @@ app.post("/", async (req, res) => {
   }
 });
 
+// 🟢 Start server
 app.listen(PORT, () => {
   console.log(`MCP Server running on ${PORT}`);
 });
