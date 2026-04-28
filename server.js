@@ -65,7 +65,8 @@ app.post("/", async (req, res) => {
   console.log("🔥 MCP HIT:", req.body);
 
   const { method, params, id } = req.body || {};
-
+  console.log("METHOD:", method);
+  console.log("PARAMS:", params);
   try {
     // ✅ INITIALIZE
     if (method === "initialize") {
@@ -119,15 +120,41 @@ app.post("/", async (req, res) => {
       });
     }
 
-    // ❌ Not tools/call → ignore safely
-    if (method !== "tools/call") {
+    // 🔥 ALWAYS HANDLE tools/call SAFELY
+    if (method === "tools/call") {
+    
+      if (!params || params.name !== "get_patient_summary") {
+        return res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "Invalid tool request"
+              }
+            ]
+          }
+        });
+      }
+    
+      // 👉 your full logic here (FHIR calls etc.)
+    
+    } else {
+      // ✅ IMPORTANT: do NOT send empty result blindly
       return res.json({
         jsonrpc: "2.0",
         id: id || 1,
-        result: {}
+        result: {
+          content: [
+            {
+              type: "text",
+              text: `Unhandled method: ${method}`
+            }
+          ]
+        }
       });
     }
-
     // 🔥 SAFE PARAM CHECK (FIXED)
     if (!params || params.name !== "get_patient_summary") {
       console.log("⚠️ Invalid params:", params);
