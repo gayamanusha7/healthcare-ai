@@ -226,7 +226,7 @@ app.post("/", async (req, res) => {
     } else {
       summaryText = `${name.trim()} has ${conditions.join(", ")}.`;
     }
-
+    console.log("FINAL TEXT:", summaryText);
     // ✅ Final response (clear text)
     return res.json({
       jsonrpc: "2.0",
@@ -237,17 +237,17 @@ app.post("/", async (req, res) => {
             type: "text",
             text: `Patient Summary:
 
-            Name: ${name.trim() || "Unknown"}
-            Gender: ${gender}
-            DOB: ${dob}
-            Conditions: ${
-                          conditions.length > 0
-                            ? conditions.join(", ")
-                            : "No known conditions"
-                        }
+Name: ${name.trim() || "Unknown"}
+Gender: ${gender}
+DOB: ${dob}
+Conditions: ${
+              conditions.length > 0
+                ? conditions.join(", ")
+                : "No known conditions"
+            }
+
+${summaryText}`
             
-            ${summaryText}`
-            console.log("FINAL TEXT:", summaryText);
           }
         ]
       }
