@@ -28,13 +28,13 @@ app.get("/.well-known/mcp", (req, res) => {
   });
 });
 
-// 🔧 Safe header getter
+// 🔧 Header helper
 const getHeader = (req, key) =>
   req.headers[key] ||
   req.headers[key.toLowerCase()] ||
   req.headers[key.toUpperCase()];
 
-// 🔧 Decode JWT
+// 🔧 JWT decode (fallback)
 function decodeJwtPayload(token) {
   try {
     const payload = token.split(".")[1];
@@ -44,12 +44,13 @@ function decodeJwtPayload(token) {
   }
 }
 
-// 🔧 Find patient by name (fallback)
+// 🔧 Find patient fallback
 async function findPatientIdByName(fhirBase, token, given, family) {
   if (!given && !family) return null;
 
-  const query = encodeURIComponent([given, family].join(" "));
-  const url = `${fhirBase}/Patient?name=${query}&_count=5`;
+  const url = `${fhirBase}/Patient?name=${encodeURIComponent(
+    `${given} ${family}`
+  )}&_count=5`;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` }
@@ -59,7 +60,7 @@ async function findPatientIdByName(fhirBase, token, given, family) {
   return data.entry?.[0]?.resource?.id || null;
 }
 
-// 🔥 MAIN MCP HANDLER
+// 🔥 MAIN HANDLER
 app.post("/", async (req, res) => {
   console.log("🔥 MCP HIT:", req.body);
 
@@ -92,11 +93,9 @@ app.post("/", async (req, res) => {
       });
     }
 
+    // ✅ Notifications
     if (method === "notifications/initialized") {
-      return res.json({
-        jsonrpc: "2.0",
-        result: {}
-      });
+      return res.json({ jsonrpc: "2.0", result: {} });
     }
 
     // ✅ tools/list
@@ -120,6 +119,7 @@ app.post("/", async (req, res) => {
       });
     }
 
+    // ❌ Not tools/call → ignore safely
     if (method !== "tools/call") {
       return res.json({
         jsonrpc: "2.0",
@@ -128,12 +128,20 @@ app.post("/", async (req, res) => {
       });
     }
 
-    if (params?.name !== "get_patient_summary") {
+    // 🔥 SAFE PARAM CHECK (FIXED)
+    if (!params || params.name !== "get_patient_summary") {
+      console.log("⚠️ Invalid params:", params);
+
       return res.json({
         jsonrpc: "2.0",
         id,
         result: {
-          content: [{ type: "text", text: "Unknown tool" }]
+          content: [
+            {
+              type: "text",
+              text: "Invalid tool request"
+            }
+          ]
         }
       });
     }
@@ -148,10 +156,12 @@ app.post("/", async (req, res) => {
     // 🔥 fallback patient resolve
     if (!patientId && token && fhirBase) {
       const payload = decodeJwtPayload(token);
-      const given = payload?.given_name || "";
-      const family = payload?.family_name || "";
-
-      patientId = await findPatientIdByName(fhirBase, token, given, family);
+      patientId = await findPatientIdByName(
+        fhirBase,
+        token,
+        payload?.given_name,
+        payload?.family_name
+      );
     }
 
     if (!patientId) {
@@ -170,12 +180,10 @@ app.post("/", async (req, res) => {
     }
 
     // 🔹 Fetch Patient
-    let patient = {};
     const pRes = await fetch(`${fhirBase}/Patient/${patientId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
-    // ✅ 403 handling
     if (pRes.status === 403) {
       return res.json({
         jsonrpc: "2.0",
@@ -184,14 +192,14 @@ app.post("/", async (req, res) => {
           content: [
             {
               type: "text",
-              text: "Access denied for this patient. Please reselect the patient."
+              text: "Access denied for this patient. Please reselect."
             }
           ]
         }
       });
     }
 
-    patient = await pRes.json();
+    const patient = await pRes.json();
 
     const name =
       (patient.name?.[0]?.given?.join(" ") || "") +
@@ -201,12 +209,15 @@ app.post("/", async (req, res) => {
     const gender = patient.gender || "Unknown";
     const dob = patient.birthDate || "Unknown";
 
-    // 🔹 Fetch Conditions
+    // 🔹 Conditions
     let conditions = [];
     try {
-      const cRes = await fetch(`${fhirBase}/Condition?patient=${patientId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const cRes = await fetch(
+        `${fhirBase}/Condition?patient=${patientId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
 
       const cData = await cRes.json();
 
@@ -215,19 +226,18 @@ app.post("/", async (req, res) => {
           (c) => c.resource.code?.text || "Unknown"
         ) || [];
     } catch (e) {
-      console.error("❌ Condition fetch error:", e.message);
+      console.error("❌ Condition error:", e.message);
     }
 
-    // 🔥 Better summary
-    let summaryText = "";
+    // 🔥 Summary
+    const summaryText =
+      conditions.length === 0
+        ? `${name.trim()} has no known medical conditions recorded.`
+        : `${name.trim()} has ${conditions.join(", ")}.`;
 
-    if (conditions.length === 0) {
-      summaryText = `${name.trim()} has no known medical conditions recorded.`;
-    } else {
-      summaryText = `${name.trim()} has ${conditions.join(", ")}.`;
-    }
     console.log("FINAL TEXT:", summaryText);
-    // ✅ Final response (clear text)
+
+    // ✅ FINAL RESPONSE (always returns content)
     return res.json({
       jsonrpc: "2.0",
       id,
@@ -247,7 +257,6 @@ Conditions: ${
             }
 
 ${summaryText}`
-            
           }
         ]
       }
